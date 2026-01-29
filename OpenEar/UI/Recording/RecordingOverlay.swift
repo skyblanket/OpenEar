@@ -143,7 +143,7 @@ class RecordingOverlayController {
     }
 }
 
-// MARK: - Custom Shape: MacBook Notch Style (With Shoulder Curves)
+// MARK: - Custom Shape: MacBook Notch Style (Smooth Bezier Curves)
 
 struct NotchShape: Shape {
     var cornerRadius: CGFloat
@@ -155,61 +155,51 @@ struct NotchShape: Shape {
 
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        let cr = min(cornerRadius, rect.height / 2, rect.width / 2)
 
-        // Shoulder curve radius (the "ears" that blend into top edge)
-        let shoulderR: CGFloat = 8
+        // Bottom corner radius (rounded corners at bottom)
+        let bottomCR = min(cornerRadius, rect.height / 2, rect.width / 2)
 
-        // Start at far left of top edge (outside main rect for shoulder)
-        path.move(to: CGPoint(x: rect.minX - shoulderR, y: rect.minY))
+        // Top shoulder curve size (the smooth "ears")
+        let shoulderSize: CGFloat = 10
 
-        // Left shoulder curve (curves down and inward)
-        path.addArc(
-            center: CGPoint(x: rect.minX - shoulderR, y: rect.minY + shoulderR),
-            radius: shoulderR,
-            startAngle: .degrees(-90),
-            endAngle: .degrees(0),
-            clockwise: false
+        // Start at top-left, outside the main rect for shoulder
+        path.move(to: CGPoint(x: rect.minX - shoulderSize, y: rect.minY))
+
+        // Top-left shoulder: smooth quadratic curve down and in
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + shoulderSize),
+            control: CGPoint(x: rect.minX, y: rect.minY)
         )
 
-        // Left side down to bottom corner
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - cr))
+        // Left side down
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - bottomCR))
 
-        // Bottom-left rounded corner
-        path.addArc(
-            center: CGPoint(x: rect.minX + cr, y: rect.maxY - cr),
-            radius: cr,
-            startAngle: .degrees(180),
-            endAngle: .degrees(90),
-            clockwise: true
+        // Bottom-left corner: smooth quadratic curve
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + bottomCR, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
         )
 
         // Bottom edge
-        path.addLine(to: CGPoint(x: rect.maxX - cr, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - bottomCR, y: rect.maxY))
 
-        // Bottom-right rounded corner
-        path.addArc(
-            center: CGPoint(x: rect.maxX - cr, y: rect.maxY - cr),
-            radius: cr,
-            startAngle: .degrees(90),
-            endAngle: .degrees(0),
-            clockwise: true
+        // Bottom-right corner: smooth quadratic curve
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - bottomCR),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
         )
 
         // Right side up
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + shoulderR))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + shoulderSize))
 
-        // Right shoulder curve (curves up and outward)
-        path.addArc(
-            center: CGPoint(x: rect.maxX + shoulderR, y: rect.minY + shoulderR),
-            radius: shoulderR,
-            startAngle: .degrees(180),
-            endAngle: .degrees(-90),
-            clockwise: false
+        // Top-right shoulder: smooth quadratic curve up and out
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX + shoulderSize, y: rect.minY),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
         )
 
         // Top edge back to start
-        path.addLine(to: CGPoint(x: rect.minX - shoulderR, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX - shoulderSize, y: rect.minY))
 
         path.closeSubpath()
 
