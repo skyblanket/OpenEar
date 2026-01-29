@@ -24,7 +24,7 @@ A sleek, fully local speech-to-text app for macOS. Hold a hotkey, speak, release
 
 ### Quick Install (Recommended)
 
-Download the latest DMG from [Releases](https://github.com/yourusername/OpenEar/releases):
+Download the latest DMG from [Releases](https://github.com/skyblanket/OpenEar/releases):
 
 1. Download `OpenEar-vX.X.X.dmg`
 2. Open the DMG
@@ -37,7 +37,7 @@ Download the latest DMG from [Releases](https://github.com/yourusername/OpenEar/
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/OpenEar.git
+git clone https://github.com/skyblanket/OpenEar.git
 cd OpenEar
 
 # Option 1: Build with Xcode
