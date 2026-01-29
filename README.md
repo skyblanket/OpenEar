@@ -22,19 +22,36 @@ A sleek, fully local speech-to-text app for macOS. Hold a hotkey, speak, release
 
 ## Installation
 
-### Download
+### Quick Install (Recommended)
 
-Download the latest release from [Releases](https://github.com/yourusername/OpenEar/releases).
+Download the latest DMG from [Releases](https://github.com/yourusername/OpenEar/releases):
+
+1. Download `OpenEar-vX.X.X.dmg`
+2. Open the DMG
+3. Drag **OpenEar** to **Applications**
+4. Launch from Applications
+
+> **Note**: On first launch, macOS may warn about an unidentified developer. Go to **System Settings → Privacy & Security** and click "Open Anyway".
 
 ### Build from Source
 
 ```bash
+# Clone the repo
 git clone https://github.com/yourusername/OpenEar.git
 cd OpenEar
+
+# Option 1: Build with Xcode
 open OpenEar.xcodeproj
+# Press ⌘R to build and run
+
+# Option 2: Build DMG from command line
+./scripts/build-dmg.sh 0.1.0
 ```
 
-Build and run with Xcode (⌘R).
+### First Launch Setup
+
+1. **Microphone Permission** — Click "Allow" when prompted
+2. **Accessibility Permission** — Go to System Settings → Privacy & Security → Accessibility → Enable OpenEar
 
 ## Usage
 

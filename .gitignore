@@ -1,5 +1,9 @@
 # Build artifacts
 .build/
+.build-temp/
+
+# Releases (upload to GitHub Releases, not git)
+releases/*.dmg
 build/
 DerivedData/
 *.xcodeproj/project.xcworkspace/xcuserdata/
