@@ -12,8 +12,12 @@ struct MenuBarView: View {
             Divider()
 
             // Main content based on state
-            if appState.microphonePermission != .granted {
+            if case .error(let message) = appState.recordingState {
+                errorRecoveryView(message: message)
+            } else if appState.microphonePermission != .granted || appState.accessibilityPermission != .granted {
                 setupNeededView
+            } else if !appState.isModelDownloaded {
+                modelLoadingView
             } else {
                 mainContentView
             }
@@ -53,7 +57,7 @@ struct MenuBarView: View {
     private var statusColor: Color {
         switch appState.recordingState {
         case .idle:
-            if appState.microphonePermission != .granted {
+            if appState.microphonePermission != .granted || appState.accessibilityPermission != .granted {
                 return .orange
             }
             return appState.isModelDownloaded ? .green : .blue
@@ -71,7 +75,7 @@ struct MenuBarView: View {
     private var statusText: String {
         switch appState.recordingState {
         case .idle:
-            if appState.microphonePermission != .granted {
+            if appState.microphonePermission != .granted || appState.accessibilityPermission != .granted {
                 return "Setup Required"
             }
             return appState.isModelDownloaded ? "Ready" : "Loading Model..."
@@ -81,9 +85,59 @@ struct MenuBarView: View {
             return "Transcribing..."
         case .injecting:
             return "Done!"
-        case .error(let msg):
-            return msg
+        case .error:
+            return "Error"
         }
+    }
+
+    // MARK: - Error Recovery View
+
+    private func errorRecoveryView(message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 28))
+                .foregroundStyle(.red)
+
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Recovery actions based on error type
+            VStack(spacing: 8) {
+                if message.contains("Microphone") {
+                    Button("Open Microphone Settings") {
+                        openSystemPreferences(pane: "Privacy_Microphone")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                } else if message.contains("Accessibility") {
+                    Button("Open Accessibility Settings") {
+                        appState.requestAccessibilityPermission()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                } else if message.contains("Model") || message.contains("download") {
+                    Button("Retry Download") {
+                        appState.clearError()
+                        Task {
+                            await appState.downloadModel()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                // Always show dismiss option
+                Button("Dismiss") {
+                    appState.clearError()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(.vertical, 8)
     }
 
     // MARK: - Setup Needed View
@@ -97,10 +151,16 @@ struct MenuBarView: View {
             Text("Setup Required")
                 .font(.system(size: 14, weight: .semibold))
 
-            Text("Complete setup to start using OpenEar")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            // Show specific missing permissions
+            VStack(alignment: .leading, spacing: 6) {
+                if appState.microphonePermission != .granted {
+                    permissionRow("Microphone", granted: false)
+                }
+                if appState.accessibilityPermission != .granted {
+                    permissionRow("Accessibility", granted: false)
+                }
+            }
+            .padding(.vertical, 4)
 
             Button("Open Setup") {
                 AppDelegate.shared?.showOnboarding()
@@ -109,6 +169,45 @@ struct MenuBarView: View {
             .controlSize(.regular)
         }
         .padding(.vertical, 8)
+    }
+
+    private func permissionRow(_ name: String, granted: Bool) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(granted ? .green : .red)
+                .font(.system(size: 12))
+            Text(name)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Model Loading View
+
+    private var modelLoadingView: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .scaleEffect(0.9)
+
+            Text("Loading speech model...")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            Text(appState.selectedModel)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary)
+
+            // Show retry if stuck for too long
+            Button("Retry") {
+                Task {
+                    await appState.downloadModel()
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .padding(.top, 4)
+        }
+        .padding(.vertical, 12)
     }
 
     // MARK: - Main Content
@@ -132,50 +231,14 @@ struct MenuBarView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .lineLimit(4)
             } else if appState.recordingState == .idle {
-                // Instructions or loading state
-                if !appState.isModelDownloaded {
-                    VStack(spacing: 8) {
-                        ProgressView()
-                            .scaleEffect(0.8)
-                        Text("Loading speech model...")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 12)
-                } else {
-                    VStack(spacing: 6) {
-                        Text("Hold **Fn** or **Ctrl+Space** to record")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 12)
+                VStack(spacing: 6) {
+                    Text("Hold **Fn** or **Ctrl+Space** to record")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
-            }
-
-            // Permission warnings
-            if appState.accessibilityPermission != .granted {
-                warningBadge("Accessibility needed", icon: "keyboard")
-                    .onTapGesture {
-                        appState.requestAccessibilityPermission()
-                    }
+                .padding(.vertical, 12)
             }
         }
-    }
-
-    private func warningBadge(_ text: String, icon: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 10))
-            Text(text)
-                .font(.system(size: 10))
-            Image(systemName: "chevron.right")
-                .font(.system(size: 8))
-        }
-        .foregroundStyle(.orange)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.orange.opacity(0.1))
-        .clipShape(Capsule())
     }
 
     // MARK: - Footer
@@ -194,6 +257,17 @@ struct MenuBarView: View {
 
             Spacer()
 
+            // Reset button (for stuck states)
+            Button {
+                appState.resetState()
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Reset if stuck")
+
             // Settings
             SettingsLink {
                 Image(systemName: "gear")
@@ -201,6 +275,7 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .padding(.leading, 6)
 
             // Quit
             Button {
@@ -211,8 +286,15 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .padding(.leading, 8)
+            .padding(.leading, 6)
         }
+    }
+
+    // MARK: - Helpers
+
+    private func openSystemPreferences(pane: String) {
+        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!
+        NSWorkspace.shared.open(url)
     }
 }
 

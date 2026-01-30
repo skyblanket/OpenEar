@@ -44,20 +44,55 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("OpenEar: applicationDidFinishLaunching")
-        Task {
-            await appState.setup()
+        log("applicationDidFinishLaunching")
 
-            // Show onboarding immediately if first launch
-            print("OpenEar: showOnboarding flag = \(appState.showOnboarding)")
+        // Initialize analytics
+        Analytics.shared.configure()
+        Analytics.shared.trackAppLaunched()
+        Task {
+            // First just check permissions (fast)
+            await appState.checkPermissions()
+            appState.checkIfOnboardingNeeded()
+
+            log("showOnboarding flag = \(appState.showOnboarding), mic = \(appState.microphonePermission), acc = \(appState.accessibilityPermission)")
+
+            // Show onboarding BEFORE any slow operations (like model download)
             if appState.showOnboarding {
-                showOnboarding()
+                log("Showing onboarding first...")
+                await MainActor.run {
+                    showOnboarding()
+                }
+                // Don't run full setup yet - onboarding will handle model download
+                return
+            }
+
+            // Only run full setup if not showing onboarding
+            await appState.setup()
+        }
+    }
+
+    private func log(_ message: String) {
+        let msg = "OpenEar: \(message)"
+        print(msg)
+        // Also write to file for debugging
+        let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("openear_debug.log")
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(timestamp)] \(msg)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logFile.path) {
+                if let handle = try? FileHandle(forWritingTo: logFile) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                try? data.write(to: logFile)
             }
         }
     }
 
     func showOnboarding() {
-        print("OpenEar: showOnboarding called")
+        log("showOnboarding called")
 
         // Close existing window if any
         onboardingWindow?.close()
@@ -80,22 +115,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         window.center()
         window.contentView = NSHostingView(rootView: onboardingView)
         window.title = "OpenEar Setup"
-        window.level = .floating
+        window.level = .modalPanel  // Higher level than .floating
         window.backgroundColor = .windowBackgroundColor
         window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
         self.onboardingWindow = window
 
-        // Bring to front
+        // For menu bar apps, we need to temporarily become a regular app to show windows
+        NSApp.setActivationPolicy(.regular)
+
+        // Bring to front forcefully
+        window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        print("OpenEar: Onboarding window shown")
+        log("Onboarding window shown at level \(window.level.rawValue)")
     }
 
     func closeOnboarding() {
         onboardingWindow?.close()
         onboardingWindow = nil
+
+        // Return to menu bar only mode (hide from dock)
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 

@@ -41,7 +41,7 @@ final class AppState: ObservableObject {
     @Published var microphonePermission: PermissionState = .unknown
     @Published var accessibilityPermission: PermissionState = .unknown
     @Published var showOnboarding: Bool = false
-    @Published var selectedModel: String = "base.en"
+    @Published var selectedModel: String = "tiny.en"  // Faster for real-time, slightly less accurate
 
     // MARK: - Dependencies
 
@@ -54,6 +54,10 @@ final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var audioBuffer: [Float] = []
     private var hasSetup = false
+    private var recordingStartTime: Date?
+    private var recordingTrigger: String = "unknown"
+    private var firstWordTime: Date?
+    private var hasTrackedFirstWord = false
 
     // MARK: - Initialization
 
@@ -98,16 +102,41 @@ final class AppState: ObservableObject {
 
     /// Check if onboarding should be shown (permissions not granted)
     func checkIfOnboardingNeeded() {
-        // Show onboarding if any required permission is missing
+        // Show onboarding if any required permission is missing or unknown
         if microphonePermission != .granted || accessibilityPermission != .granted {
             showOnboarding = true
-            print("OpenEar: Permissions missing - showing onboarding")
+            print("OpenEar: Permissions missing (mic: \(microphonePermission), acc: \(accessibilityPermission)) - showing onboarding")
         }
     }
 
     func completeOnboarding() {
         UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
         showOnboarding = false
+
+        // Run remaining setup that was skipped during onboarding
+        Task {
+            await finishSetupAfterOnboarding()
+        }
+    }
+
+    /// Setup components that weren't initialized during onboarding
+    private func finishSetupAfterOnboarding() async {
+        guard !hasSetup else { return }
+        hasSetup = true
+
+        print("OpenEar: Finishing setup after onboarding...")
+        setupAudioCapture()
+        print("OpenEar: Audio capture ready")
+        // Model already downloaded during onboarding, just ensure engine is ready
+        if transcriptionEngine == nil {
+            transcriptionEngine = TranscriptionEngine()
+        }
+        setupTextInjector()
+        print("OpenEar: Text injector ready")
+        setupHotkeyMonitoring()
+        print("OpenEar: Hotkey monitoring ready")
+        RecordingOverlayController.shared.setup(appState: self)
+        print("OpenEar: Setup complete after onboarding!")
     }
 
     /// Reset onboarding (for testing)
@@ -131,13 +160,20 @@ final class AppState: ObservableObject {
         case .authorized:
             return .granted
         case .notDetermined:
-            let granted = await AVCaptureDevice.requestAccess(for: .audio)
-            return granted ? .granted : .denied
+            return .unknown  // Don't auto-request, let user trigger it
         case .denied, .restricted:
             return .denied
         @unknown default:
             return .unknown
         }
+    }
+
+    /// Explicitly request microphone permission (called when user clicks Continue)
+    func requestMicrophonePermission() async {
+        print("OpenEar: Requesting microphone permission...")
+        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        microphonePermission = granted ? .granted : .denied
+        print("OpenEar: Microphone permission result: \(microphonePermission)")
     }
 
     private func checkAccessibilityPermission() -> PermissionState {
@@ -146,22 +182,62 @@ final class AppState: ObservableObject {
     }
 
     func requestAccessibilityPermission() {
-        // Try the prompt first
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
-        AXIsProcessTrustedWithOptions(options as CFDictionary)
+        // Use AXIsProcessTrustedWithOptions to:
+        // 1. Add the app to the Accessibility list (if not already there)
+        // 2. Open System Settings > Privacy > Accessibility
+        // The prompt option both adds the app AND opens settings - don't open settings separately
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let _ = AXIsProcessTrustedWithOptions(options)
+        print("OpenEar: Requested accessibility permission (opens System Settings)")
 
-        // Also open System Settings directly - try multiple URL schemes for compatibility
-        // macOS 13+ uses different URL scheme
-        let urls = [
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"
-        ]
+        // Bring System Settings to front after a small delay
+        bringSystemSettingsToFront()
+    }
 
-        for urlString in urls {
-            if let url = URL(string: urlString) {
-                let success = NSWorkspace.shared.open(url)
-                print("OpenEar: Trying to open \(urlString) - success: \(success)")
-                if success { break }
+    /// Bring System Settings to front so it's visible above onboarding
+    private func bringSystemSettingsToFront() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let runningApps = NSWorkspace.shared.runningApplications
+            for app in runningApps {
+                if app.bundleIdentifier == "com.apple.systempreferences" ||
+                   app.bundleIdentifier == "com.apple.Preferences" {
+                    app.activate(options: .activateIgnoringOtherApps)
+                    print("OpenEar: Brought System Settings to front")
+                    return
+                }
+            }
+        }
+    }
+
+    /// Called when accessibility permission is granted - bring app to front
+    func onAccessibilityGranted() {
+        print("OpenEar: Accessibility granted, bringing app to front")
+
+        // Close System Settings
+        let runningApps = NSWorkspace.shared.runningApplications
+        for app in runningApps {
+            if app.bundleIdentifier == "com.apple.systempreferences" ||
+               app.bundleIdentifier == "com.apple.Preferences" ||
+               app.bundleIdentifier == "com.apple.systempreferences.universal-access" {
+                app.terminate()
+            }
+        }
+
+        // Small delay to let System Settings close
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            // Bring our app to front
+            NSApp.activate(ignoringOtherApps: true)
+
+            // Restore and show onboarding window
+            for window in NSApp.windows {
+                if window.title == "OpenEar Setup" {
+                    // Deminiaturize if it was minimized
+                    if window.isMiniaturized {
+                        window.deminiaturize(nil)
+                    }
+                    window.makeKeyAndOrderFront(nil)
+                    window.orderFrontRegardless()
+                }
             }
         }
     }
@@ -218,13 +294,25 @@ final class AppState: ObservableObject {
         }
     }
 
-    func downloadModelWithProgress() async throws {
+    func downloadModelWithProgress(
+        _ progressHandler: @escaping (Progress) -> Void,
+        onDownloadComplete: (() -> Void)? = nil
+    ) async throws {
+        // Ensure transcription engine exists
+        if transcriptionEngine == nil {
+            transcriptionEngine = TranscriptionEngine()
+        }
+
         guard let engine = transcriptionEngine else {
             throw NSError(domain: "OpenEar", code: 1, userInfo: [NSLocalizedDescriptionKey: "Engine not initialized"])
         }
 
-        print("OpenEar: Loading model \(selectedModel)...")
-        try await engine.loadModel(selectedModel)
+        print("OpenEar: Loading model \(selectedModel) with progress...")
+        try await engine.loadModelWithProgress(
+            selectedModel,
+            progressHandler: progressHandler,
+            onDownloadComplete: onDownloadComplete
+        )
         isModelDownloaded = true
         print("OpenEar: Model loaded successfully!")
     }
@@ -234,6 +322,14 @@ final class AppState: ObservableObject {
 
         // Stream chunks to transcription engine for real-time partial results
         if let partialText = await transcriptionEngine?.transcribeChunk(buffer) {
+            // Track time to first word (when we first get non-empty text)
+            if !hasTrackedFirstWord && !partialText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                hasTrackedFirstWord = true
+                if let startTime = recordingStartTime {
+                    let latencyMs = Int(Date().timeIntervalSince(startTime) * 1000)
+                    Analytics.shared.trackTimeToFirstWord(latencyMs: latencyMs, model: selectedModel)
+                }
+            }
             partialTranscription = partialText
         }
     }
@@ -252,7 +348,7 @@ final class AppState: ObservableObject {
 
         fnKeyMonitor?.onFnDown = { [weak self] in
             Task { @MainActor in
-                await self?.startRecording()
+                await self?.startRecording(trigger: "fn_key")
             }
         }
 
@@ -276,7 +372,7 @@ final class AppState: ObservableObject {
 
         hotkeyManager?.onHotkeyDown = { [weak self] in
             Task { @MainActor in
-                await self?.startRecording()
+                await self?.startRecording(trigger: "ctrl_space")
             }
         }
 
@@ -293,7 +389,7 @@ final class AppState: ObservableObject {
 
     // MARK: - Recording Control
 
-    func startRecording() async {
+    func startRecording(trigger: String = "unknown") async {
         print("OpenEar: startRecording called, current state: \(recordingState)")
         guard recordingState == .idle else {
             print("OpenEar: Not idle, ignoring")
@@ -302,11 +398,13 @@ final class AppState: ObservableObject {
         guard microphonePermission == .granted else {
             print("OpenEar: Mic permission not granted!")
             recordingState = .error("Microphone permission required")
+            Analytics.shared.trackRecordingFailed(error: "Microphone permission required", state: "idle")
             return
         }
         guard isModelDownloaded else {
             print("OpenEar: Model not downloaded!")
             recordingState = .error("Model not downloaded")
+            Analytics.shared.trackRecordingFailed(error: "Model not downloaded", state: "idle")
             return
         }
 
@@ -315,6 +413,14 @@ final class AppState: ObservableObject {
         audioBuffer = []
         partialTranscription = ""
         finalTranscription = ""
+        recordingStartTime = Date()
+        recordingTrigger = trigger
+        hasTrackedFirstWord = false
+        firstWordTime = nil
+
+        // Track recording start with trigger source
+        Analytics.shared.trackRecordingStarted(trigger: trigger)
+        Analytics.shared.trackHotkeyUsed(trigger)
 
         // Show recording overlay near the input field
         RecordingOverlayController.shared.show()
@@ -329,6 +435,7 @@ final class AppState: ObservableObject {
         } catch {
             print("OpenEar: Failed to start: \(error)")
             recordingState = .error("Failed to start recording: \(error.localizedDescription)")
+            Analytics.shared.trackRecordingFailed(error: error.localizedDescription, state: "starting")
             RecordingOverlayController.shared.hide()
         }
     }
@@ -338,15 +445,45 @@ final class AppState: ObservableObject {
         guard recordingState == .recording else { return }
 
         recordingState = .transcribing
+        let recordingDuration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        let audioDuration = Double(audioBuffer.count) / 16000.0  // 16kHz sample rate
         print("OpenEar: Transcribing \(audioBuffer.count) samples...")
+
+        // Track recording completed
+        Analytics.shared.trackRecordingCompleted(durationSeconds: recordingDuration, audioSamples: audioBuffer.count)
 
         // Stop audio capture
         audioCaptureManager?.stopCapture()
 
         // Finalize transcription
+        let transcriptionStart = Date()
         if let finalText = await transcriptionEngine?.finishStreaming(audioBuffer) {
             finalTranscription = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
             print("OpenEar: Transcription result: \(finalTranscription)")
+
+            let transcriptionDuration = Date().timeIntervalSince(transcriptionStart)
+            let wordCount = finalTranscription.split(separator: " ").count
+
+            // Track transcription with full metrics
+            Analytics.shared.trackTranscriptionCompleted(
+                durationSeconds: transcriptionDuration,
+                characterCount: finalTranscription.count,
+                wordCount: wordCount,
+                audioDurationSeconds: audioDuration,
+                model: selectedModel
+            )
+
+            // Track latency ratio
+            Analytics.shared.trackTranscriptionLatency(
+                audioDurationSeconds: audioDuration,
+                processingTimeSeconds: transcriptionDuration,
+                model: selectedModel
+            )
+
+            // Track empty transcription (user spoke but got nothing)
+            if finalTranscription.isEmpty && audioDuration > 1.0 {
+                Analytics.shared.trackTranscriptionEmpty(audioDurationSeconds: audioDuration)
+            }
         }
 
         // Inject text if we have any
@@ -357,10 +494,12 @@ final class AppState: ObservableObject {
             guard accessibilityPermission == .granted else {
                 print("OpenEar: Accessibility permission not granted!")
                 recordingState = .error("Accessibility permission required for text injection")
+                Analytics.shared.trackTextInjectionFailed(error: "Accessibility permission not granted")
                 return
             }
 
             textInjector?.injectText(finalTranscription)
+            Analytics.shared.trackTextInjected(characterCount: finalTranscription.count)
             print("OpenEar: Text injected!")
         } else {
             print("OpenEar: No transcription to inject")
@@ -373,6 +512,9 @@ final class AppState: ObservableObject {
     }
 
     func cancelRecording() {
+        let durationBeforeCancel = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
+        Analytics.shared.trackRecordingCancelled(durationSeconds: durationBeforeCancel)
+
         RecordingOverlayController.shared.hide()
         audioCaptureManager?.stopCapture()
         Task {
@@ -382,6 +524,48 @@ final class AppState: ObservableObject {
         audioBuffer = []
         partialTranscription = ""
         audioLevel = 0.0
+    }
+
+    // MARK: - Error Recovery
+
+    /// Clear current error state
+    func clearError() {
+        if case .error = recordingState {
+            recordingState = .idle
+        }
+    }
+
+    /// Reset app to clean state (for stuck states)
+    func resetState() {
+        print("OpenEar: Resetting state...")
+
+        // Cancel any ongoing recording
+        RecordingOverlayController.shared.hide()
+        audioCaptureManager?.stopCapture()
+        Task {
+            await transcriptionEngine?.cancelStreaming()
+        }
+
+        // Reset all state
+        recordingState = .idle
+        audioBuffer = []
+        partialTranscription = ""
+        finalTranscription = ""
+        audioLevel = 0.0
+
+        // Re-check permissions
+        Task {
+            await checkPermissions()
+        }
+
+        Analytics.shared.trackError("manual_reset", context: "user_triggered")
+        print("OpenEar: State reset complete")
+    }
+
+    /// Retry model download after failure
+    func retryModelDownload() async {
+        clearError()
+        await downloadModel()
     }
 }
 

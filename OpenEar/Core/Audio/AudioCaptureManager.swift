@@ -100,9 +100,9 @@ final class AudioCaptureManager {
         self.converter = converter
 
         // Calculate buffer sizes
-        // Process ~100ms chunks for responsive streaming
-        let inputBufferSize = AVAudioFrameCount(inputFormat.sampleRate * 0.1)
-        let outputBufferSize = AVAudioFrameCount(targetSampleRate * 0.1)
+        // Process ~50ms chunks for faster initial response
+        let inputBufferSize = AVAudioFrameCount(inputFormat.sampleRate * 0.05)
+        let outputBufferSize = AVAudioFrameCount(targetSampleRate * 0.05)
 
         // Install tap on input node
         inputNode.installTap(onBus: 0, bufferSize: inputBufferSize, format: inputFormat) { [weak self] buffer, _ in
